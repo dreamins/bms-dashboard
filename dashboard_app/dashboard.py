@@ -9,6 +9,14 @@ from datetime import datetime
 import json
 import os
 
+# Demo mode: replace BLE drivers with mocks (no real hardware needed)
+if os.environ.get('LITHIUM_DEMO_MODE'):
+    from mock_ble import scan_for_batteries, MockEG4BMS as EG4BMS, MockLiTimeBMS as LiTimeBMS
+    import eg4_bms, litime_bms
+    eg4_bms.EG4BMS = EG4BMS
+    eg4_bms.scan_for_batteries = scan_for_batteries
+    litime_bms.LiTimeBMS = LiTimeBMS
+
 # 1. CORE CONFIG & LOGGING
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Dashboard")
@@ -251,20 +259,20 @@ def connected_list_ui():
 
 def node_card(mac, bat):
     data = bat.data
-    with ui.card().classes('p-6 md:p-8 transition-all cursor-pointer border-0 rounded-[2rem] bg-slate-900/50 backdrop-blur-xl shadow-2xl hover:scale-[1.02]').on('click', lambda m=mac: select_battery(m)):
+    with ui.card().classes('p-6 md:p-8 transition-all cursor-pointer border-0 rounded-[2rem] bg-slate-900/50 backdrop-blur-xl shadow-2xl hover:scale-[1.02] overflow-hidden').on('click', lambda m=mac: select_battery(m)):
         if not bat.initial_sync:
             with ui.column().classes('w-full items-center justify-center py-6 md:py-10 gap-4'):
                 ui.spinner(size='3rem', color='cyan-500', thickness=2); ui.label().bind_text_from(bat, 'local_status').classes('text-[10px] font-black text-cyan-500 animate-pulse')
             return
         txt, color, icon = get_status_info(data.current)
-        with ui.row().classes('w-full justify-between items-start'):
-            with ui.column().classes('gap-0'):
-                ui.label(bat.name.split('(')[0]).classes('font-black text-xl md:text-2xl text-slate-100 truncate flex-1')
-                ui.label(bat.bms_type.upper()).classes('text-[8px] md:text-[10px] font-black text-cyan-500 tracking-widest')    
-            with ui.row().classes(f'items-center gap-1 {color} mt-1'):
+        with ui.row().classes('w-full justify-between items-start gap-2'):
+            with ui.column().classes('gap-0 min-w-0 flex-1'):
+                ui.label(bat.name.split('(')[0]).classes('font-black text-xl md:text-2xl text-slate-100 truncate')
+                ui.label(bat.bms_type.upper()).classes('text-[8px] md:text-[10px] font-black text-cyan-500 tracking-widest')
+            with ui.row().classes(f'items-center gap-1 {color} mt-1 shrink-0'):
                 ui.icon(icon, size='12px'); ui.label(txt).classes('text-[8px] font-black tracking-widest')
-        with ui.row().classes('w-full items-center gap-4 my-4 md:my-8 no-wrap'):
-            ui.label().bind_text_from(data, 'soc', backward=lambda s: f"{s}%").classes('text-5xl md:text-7xl font-black text-white tracking-tighter')
+        with ui.row().classes('w-full items-center gap-4 my-4 md:my-8 no-wrap overflow-hidden'):
+            ui.label().bind_text_from(data, 'soc', backward=lambda s: f"{s}%").classes('text-5xl md:text-6xl font-black text-white tracking-tighter shrink-0')
             with ui.column().classes('flex-1 gap-2 min-w-0'):
                 power_rail(bat, '8px')
                 with ui.row().classes('w-full justify-between px-1'):
@@ -342,7 +350,7 @@ def main_grid_content():
                 ui.icon('power', size='6rem').classes('text-slate-800 animate-pulse')
                 ui.label('WAITING FOR POWER INPUT...').classes('text-slate-600 mt-8 font-black tracking-widest text-sm text-center')
         else:
-            with ui.grid().classes('w-full gap-6 md:gap-10 grid-cols-1 md:grid-cols-2 lg:grid-cols-3'):
+            with ui.grid().classes('w-full gap-6 md:gap-8 grid-cols-1 lg:grid-cols-2 xl:grid-cols-3'):
                 for m, b in state.batteries.items(): node_card(m, b)
 
 # 9. DUAL ENGINE LAYOUT
@@ -393,4 +401,5 @@ def start_tasks():
     configs = load_config(); [asyncio.create_task(provision_node_task(c['mac'], c['bms_type'], c['name'])) for c in configs]
 
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(title='Lithium Core', port=8080, reload=False, dark=True, storage_secret='lithium-dashboard-v1')
+    port = int(os.environ.get("LITHIUM_PORT", 8080))
+    ui.run(title='Lithium Core', port=port, reload=False, dark=True, storage_secret='lithium-dashboard-v1')
