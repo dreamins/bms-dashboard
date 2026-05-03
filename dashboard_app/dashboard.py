@@ -1,13 +1,14 @@
 import asyncio
 import logging
+import os
 from nicegui import context, ui, app, events
 from eg4_bms import EG4BMS, scan_for_batteries
 from litime_bms import LiTimeBMS
 from models import BatteryData
+from ui_components import get_soc_color, generate_cell_svg, Theme
 from typing import Dict, List, Optional
 from datetime import datetime
 import json
-import os
 
 # Demo mode: replace BLE drivers with mocks (no real hardware needed)
 if os.environ.get('LITHIUM_DEMO_MODE'):
@@ -73,11 +74,6 @@ def get_status_info(current: float):
     if current < -0.2: return "DISCHARGING", "text-rose-400", "vertical_align_bottom"
     return "IDLE", "text-slate-500", "pause"
 
-def get_soc_color(soc):
-    if soc < 20: return "#f43f5e"
-    if soc < 50: return "#f59e0b"
-    return "#10b981"
-
 def power_rail(bat, height='12px'):
     c = get_soc_color(bat.data.soc)
     with ui.element('div').classes('w-full rounded-full bg-slate-900 border border-slate-800 relative overflow-hidden').style(f'height: {height}'):
@@ -113,11 +109,10 @@ def select_battery(mac):
         client_id = context.get_client().id
         if client_id not in state.clients: state.clients[client_id] = ClientState()
         state.clients[client_id].selected_mac = mac
-        layout.refresh() # Targeted refresh for specific client
+        layout.refresh()
     except RuntimeError: pass
 
 def broadcast_refresh():
-    # Only refreshable functions can be broadcasted like this
     layout.refresh()
 
 def remove_battery(mac):
@@ -143,7 +138,6 @@ def bms_callback(mac, data):
 async def polling_loop():
     while True:
         try:
-            # Poll or reconnect EVERY battery in the system
             tasks = [poll_battery(bat) for bat in state.batteries.values() if not bat.busy]
             if tasks: await asyncio.gather(*tasks, return_exceptions=True)
         except Exception as e: logger.error(f"Polling loop error: {e}")
@@ -152,7 +146,6 @@ async def polling_loop():
 async def poll_battery(bat):
     bat.busy = True
     try:
-        # 1. Initialize BMS if type is already known (Auto-Detect waits until after probing)
         if not bat.bms and bat.bms_type != 'Auto-Detect':
             from eg4_bms import EG4BMS
             from litime_bms import LiTimeBMS
@@ -160,7 +153,6 @@ async def poll_battery(bat):
             bat.bms = bms_class(bat.address)
             bat.bms.on_data_callback = lambda d, m=bat.address: bms_callback(m, d)
 
-        # 2. Handle connection/reconnection
         if not bat.connected:
             try:
                 if bat.bms_type == 'Auto-Detect':
@@ -169,7 +161,6 @@ async def poll_battery(bat):
                     async with BleakClient(bat.address, timeout=5.0) as client:
                         svcs = [s.uuid.lower() for s in client.services]
                         bat.bms_type = 'LiTime/Redodo' if any("ffe0" in s for s in svcs) else 'EG4'
-                    # Re-init bms with correct class if type was determined
                     bms_class = EG4BMS if 'EG4' in bat.bms_type else LiTimeBMS
                     bat.bms = bms_class(bat.address)
                     bat.bms.on_data_callback = lambda d, m=bat.address: bms_callback(m, d)
@@ -189,7 +180,6 @@ async def poll_battery(bat):
                 bat.connected = False
                 return
 
-        # 3. Normal Polling
         try:
             await asyncio.wait_for(bat.bms.poll(), timeout=5.0)
         except Exception as e:
@@ -280,6 +270,7 @@ def node_card(mac, bat):
                     ui.label().bind_text_from(data, 'power_w', backward=lambda p: f"({abs(p):.0f}W)").classes('text-[8px] font-black text-slate-600')
 
 # 8. LAYOUT TEMPLATES
+@ui.refreshable
 def sidebar_content():
     ui.label('DISCOVERY').classes('text-[10px] font-black text-slate-500 tracking-[0.3em] mb-4')
     dev_sel = ui.select(options=state.device_options, label='SELECT SOURCE').classes('w-full mb-4').props('dark outlined dense')
@@ -322,25 +313,21 @@ def detail_view_content(bat):
                                 ui.label().bind_text_from(data, 'temp_env', backward=lambda t: f"{t}°C").classes('text-2xl md:text-4xl font-black ' + c_cls)
                                 ui.label().bind_text_from(data, 'temp_mos', backward=lambda t: f"/ {t}°" if t > 0 else "").classes('text-sm font-bold text-amber-600')
                         else: ui.label().bind_text_from(data, attr).classes('text-2xl md:text-4xl font-black ' + c_cls)
-        
+         
         with ui.card().classes('w-full p-6 md:p-8 bg-slate-900/40 rounded-[2rem] border border-slate-900 shadow-none min-w-0'):
             ui.label('CELL VOLTAGES').classes('text-slate-600 font-black text-[10px] tracking-[0.4em] mb-6 text-center w-full')
             
             active_indices = [i for i, v in enumerate(data.cell_voltages) if v > 0.5]
             count = max(active_indices) + 1 if active_indices else 16
             
-            # Responsive grid: 4 columns for 4S, 8 columns for 8S/16S
             grid_cols = "grid-cols-2 sm:grid-cols-4"
             if count > 4: grid_cols += " md:grid-cols-8"
             else: grid_cols += " md:grid-cols-4"
 
-            with ui.grid().classes(f'w-full gap-3 {grid_cols}'):
+            with ui.grid().classes(f'w-full gap-2 {grid_cols}'):
                 for i in range(count):
-                    v, ghost, bad = get_cell_logic(data.cell_voltages, i); c_style = 'bg-slate-900/60 border-slate-800 text-slate-200'
-                    if ghost: c_style = 'bg-slate-900/20 opacity-10'
-                    elif bad: c_style = 'bg-rose-500/10 border-rose-500/30 text-rose-400'
-                    with ui.card().classes(f'p-3 items-center rounded-2xl border {c_style} shadow-none'):
-                        ui.label(f'L{i+1:02}').classes('text-[8px] font-black text-slate-600'); ui.label(f"{v:.3f}V").classes('text-sm font-mono font-black')
+                    v, ghost, bad = get_cell_logic(data.cell_voltages, i)
+                    ui.html(generate_cell_svg(v, ghost, bad, f'L{i+1:02}'))
 
 def main_grid_content():
     with ui.column().classes('w-full p-6 md:p-10 gap-10'):
@@ -386,7 +373,7 @@ def layout():
 
 @ui.page('/')
 def index():
-    ui.query('body').style('background-color: #020617; font-family: \"Inter\", sans-serif; padding-top: 84px;')
+    ui.query('body').style('background-color: #020617; font-family: "Inter", sans-serif; padding-top: 84px;')
     with ui.header().classes('items-center bg-slate-950/80 border-b border-slate-900 px-6 md:px-12 py-4 md:py-6 z-50'):
         ui.icon('hive', size='2rem', color='cyan-500'); ui.label('LITHIUM CORE').classes('text-xl md:text-3xl font-black text-white tracking-tighter'); ui.space()
         with ui.column().classes('items-end gap-1'):

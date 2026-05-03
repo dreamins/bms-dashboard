@@ -6,11 +6,11 @@ echo ########################################
 echo # Lithium Core -- Test Suite           #
 echo ########################################
 
-set VENV_PYTHON=%~dp0.venv\Scripts\python.exe
+set VENV_PYTHON=%~dp0python.exe
 set APP_DIR=%~dp0dashboard_app
 
 if not exist "%VENV_PYTHON%" (
-    echo [ERROR] Virtual environment not found. Run run.bat first to set it up.
+    echo [ERROR] Python not found in venv
     pause
     exit /b 1
 )
@@ -18,7 +18,7 @@ if not exist "%VENV_PYTHON%" (
 echo [INFO] Running test suite...
 echo.
 cd /d "%APP_DIR%"
-"%VENV_PYTHON%" -m unittest discover -s tests -v
+call "%VENV_PYTHON%" -m unittest discover -s tests -v
 set RESULT=%errorlevel%
 cd /d "%~dp0"
 
