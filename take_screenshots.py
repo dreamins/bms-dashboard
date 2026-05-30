@@ -17,9 +17,8 @@ APP        = str(Path(__file__).parent / "dashboard_app" / "dashboard.py")
 CONFIG     = Path(__file__).parent / "dashboard_app" / "batteries_config.json"
 
 REDACT_NAMES = {
-    "LiTime-Battery-01": "LiTime-Battery-01",
-    "LiTime-Battery-01":         "LiTime-Battery-01",
-    "EG4-Battery-01":                 "EG4-Battery-01",
+    # Map real battery names from batteries_config.json to generic names for screenshots.
+    # Example: "My LiTime 200Ah": "LiTime-Battery-01"
 }
 
 def patch_config():
@@ -63,8 +62,7 @@ def start_app():
     return proc
 
 REPLACEMENTS = {
-    "EG4-Battery-01":       "EG4-Battery-01",
-    "LiTime-Battery-01": "LiTime-Battery-01",
+    # Mirror of REDACT_NAMES — used to scrub real names from the live DOM.
 }
 
 def redact_text(page):

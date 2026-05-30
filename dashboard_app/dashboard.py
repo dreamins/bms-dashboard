@@ -389,4 +389,4 @@ def start_tasks():
 
 if __name__ in {"__main__", "__mp_main__"}:
     port = int(os.environ.get("LITHIUM_PORT", 8080))
-    ui.run(title='Lithium Core', port=port, reload=False, dark=True, storage_secret='lithium-dashboard-v1')
+    ui.run(title='Lithium Core', port=port, reload=False, dark=True, storage_secret=os.environ.get('LITHIUM_STORAGE_SECRET', 'lithium-dashboard-v1'))

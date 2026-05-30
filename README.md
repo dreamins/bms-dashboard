@@ -2,6 +2,8 @@
 
 A cross-platform Bluetooth dashboard for real-time monitoring of **EG4** and **LiTime/Redodo** lithium battery packs. Built with Python and NiceGUI — runs on Windows, Linux, and Mac with a single command.
 
+> **Also available as a phone-native app** — no server, no install, no APK. Open `https://dreamins.github.io/bms-dashboard/` in Chrome on Android, tap "Add to Home Screen," and it works as a standalone app with your phone's own Bluetooth connecting directly to the batteries. See [Mobile PWA](#mobile-pwa) below.
+
 ## Screenshots
 
 ### Desktop
@@ -59,6 +61,20 @@ test_all.bat
 ```
 
 102 tests covering protocol parsing contracts, BMS lifecycle, callback propagation, persistence, and UI logic.
+
+## Mobile PWA
+
+The `docs/` folder contains a standalone Web Bluetooth app that runs entirely in the browser — no Python, no server, no APK required.
+
+| Feature | Detail |
+|---|---|
+| **How to open** | `https://dreamins.github.io/bms-dashboard/` in Chrome on Android |
+| **Install** | Chrome menu → *Add to Home Screen* — launches full-screen like a native app |
+| **Bluetooth** | Phone connects directly to batteries via Web Bluetooth API |
+| **Persistence** | Battery list saved in `localStorage`; auto-reconnects on next launch |
+| **iOS** | Not supported — Apple does not implement the Web Bluetooth API in Safari |
+
+The phone-side parsers are independently tested with `node docs/parsers.test.js` (42 tests, zero dependencies).
 
 ## Supported Hardware
 
