@@ -37,6 +37,7 @@ scratch/
 CLAUDE.md
 dashboard_app/MENTAL_STATE.md
 dashboard_app/ARCHITECTURAL_DECISIONS.md
+.claude/
 
 # Protocol research notes
 *_REPORT.md
