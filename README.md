@@ -1,6 +1,6 @@
 # Lithium Core
 
-A cross-platform Bluetooth dashboard for real-time monitoring of **EG4** and **LiTime/Redodo** lithium battery packs. Built with Python and NiceGUI — runs on Windows, Linux, and Mac with a single command.
+A cross-platform Bluetooth dashboard for real-time monitoring of **EG4** and **LiTime/Redodo** lithium battery packs. Runs as a desktop app on Windows, Linux, and Mac — or as an installable **Android PWA** that connects directly to your batteries over Bluetooth, no server required.
 
 > **Also available as a phone-native app** — no server, no install, no APK. Open `https://dreamins.github.io/bms-dashboard/` in Chrome on Android, tap "Add to Home Screen," and it works as a standalone app with your phone's own Bluetooth connecting directly to the batteries. See [Mobile PWA](#mobile-pwa) below.
 
