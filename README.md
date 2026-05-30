@@ -1,8 +1,10 @@
 # Lithium Core
 
-A cross-platform Bluetooth dashboard for real-time monitoring of **EG4** and **LiTime/Redodo** lithium battery packs. Runs as a desktop app on Windows, Linux, and Mac — or as an installable **Android PWA** that connects directly to your batteries over Bluetooth, no server required.
+Real-time Bluetooth monitoring for **EG4** and **LiTime/Redodo** lithium battery packs — voltage, current, cell voltages, temperature, SOC/SOH, and cycle count.
 
-> **Also available as a phone-native app** — no server, no install, no APK. Open `https://dreamins.github.io/bms-dashboard/` in Chrome on Android, tap "Add to Home Screen," and it works as a standalone app with your phone's own Bluetooth connecting directly to the batteries. See [Mobile PWA](#mobile-pwa) below.
+Two ways to run it:
+- **Desktop** — Python app on Windows, Linux, or Mac (`run.bat` / `./run.sh`)
+- **Android** — installable PWA at [dreamins.github.io/bms-dashboard](https://dreamins.github.io/bms-dashboard/), phone Bluetooth connects directly to the batteries, no server or APK needed
 
 ## Screenshots
 
@@ -64,14 +66,7 @@ test_all.bat
 
 ## Mobile PWA
 
-The `docs/` folder contains a standalone Web Bluetooth app that runs entirely in the browser — no Python, no server, no APK required.
-
-| Feature | Detail |
-|---|---|
-| **How to open** | `https://dreamins.github.io/bms-dashboard/` in Chrome on Android |
-| **Bluetooth** | Phone connects directly to batteries via Web Bluetooth API |
-| **Persistence** | Battery list saved in `localStorage`; auto-reconnects on next launch |
-| **iOS** | Not supported — Apple does not implement the Web Bluetooth API in Safari |
+Open **https://dreamins.github.io/bms-dashboard/** in Chrome on Android. Battery list is saved locally and reconnects automatically on next launch. iOS is not supported (Apple does not implement Web Bluetooth in Safari).
 
 ### Installing to your home screen
 
