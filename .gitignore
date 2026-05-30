@@ -1,60 +1,39 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
+
+# Data files
 *.csv
 *.pdf
 *.zip
 *.apk
 *.xapk
 *.rar
-tools/
-tools/
-research/
-research/
-research/
-research/
+
+# Local config (contains device addresses)
 batteries_config.json
-dev_script.py
 
-# Local development scripts
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-test_eg4_bms.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dev_script.py
-dashboard_app/dev_script.py
-dashboard_app/dev_script.py
-dashboard_app/dev_script.py
-dashboard_app/dev_script.py
-dashboard_app/dev_script.py
-dashboard_app/dev_script.py
-dashboard_app/safe_dev_script.py
-dashboard_app/dev_script.py
-dashboard_app/dev_script.py
-dashboard_app/dev_script.py
-dashboard_app/dev_script.py
-dashboard_app/dev_script.py
+# Local directories not part of the app
+research/
+tools/
+scratch/
 
-# Protocol research docs
-REPORT.md
-REPORT.md
-PROTOCOL.md
-REPORT.md
+# Ignore all Python scripts at repo root except the two launcher scripts
+/*.py
+!run_tests.py
+!take_screenshots.py
+
+# Ignore all Python scripts in dashboard_app/ root except the core app
+/dashboard_app/*.py
+!/dashboard_app/dashboard.py
+!/dashboard_app/eg4_bms.py
+!/dashboard_app/litime_bms.py
+!/dashboard_app/mock_ble.py
+!/dashboard_app/models.py
+!/dashboard_app/ui_components.py
+
+# Protocol research notes
+*_REPORT.md
+*_PROTOCOL.md
+DIAGNOSTIC_*.md
