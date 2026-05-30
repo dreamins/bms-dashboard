@@ -69,10 +69,18 @@ The `docs/` folder contains a standalone Web Bluetooth app that runs entirely in
 | Feature | Detail |
 |---|---|
 | **How to open** | `https://dreamins.github.io/bms-dashboard/` in Chrome on Android |
-| **Install** | Chrome menu → *Add to Home Screen* — launches full-screen like a native app |
 | **Bluetooth** | Phone connects directly to batteries via Web Bluetooth API |
 | **Persistence** | Battery list saved in `localStorage`; auto-reconnects on next launch |
 | **iOS** | Not supported — Apple does not implement the Web Bluetooth API in Safari |
+
+### Installing to your home screen
+
+1. Open **https://dreamins.github.io/bms-dashboard/** in Chrome on Android
+2. Tap the **⋮** menu (top-right)
+3. Tap **"Add to Home screen"**
+4. Tap **"Add"** on the confirmation dialog
+
+The app icon appears on your home screen and launches full-screen — no browser chrome, no address bar, just like a native app.
 
 The phone-side parsers are independently tested with `node docs/parsers.test.js` (42 tests, zero dependencies).
 
