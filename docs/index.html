@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Lithium Core</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#020617">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    .spin { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.4} }
+    .pulse { animation: pulse 2s ease-in-out infinite; }
+    * { -webkit-tap-highlight-color: transparent; }
+  </style>
+</head>
+<body class="bg-[#020617] text-white min-h-screen select-none">
+
+  <header id="header" class="fixed top-0 left-0 right-0 z-50 bg-[#020617]/90 border-b border-slate-900 px-5 py-4 backdrop-blur-xl"></header>
+
+  <main id="app" class="min-h-screen pt-[68px]"></main>
+
+  <script type="module">
+  import {
+    parseEG4Frame, parseLiTimePayload, buildLiTimeFrame, EG4_POLL_CMD,
+    getCellLogic, getSocColor, getStatusInfo, generateCellSvg,
+  } from './parsers.js';
+
+  // ── BLE UUIDs ─────────────────────────────────────────────────────────────
+  const EG4_SERVICE    = '00001000-0000-1000-8000-00805f9b34fb';
+  const EG4_WRITE      = '00001001-0000-1000-8000-00805f9b34fb';
+  const EG4_NOTIFY     = '00001002-0000-1000-8000-00805f9b34fb';
+  const LITIME_SERVICE = '0000ffe0-0000-1000-8000-00805f9b34fb';
+  const LITIME_WRITE   = '0000ffe2-0000-1000-8000-00805f9b34fb';
+  const LITIME_NOTIFY  = '0000ffe1-0000-1000-8000-00805f9b34fb';
+  const POLL_LITIME    = buildLiTimeFrame(0x13);
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  const batteries = new Map();   // deviceId → BatteryState
+  let selectedId  = null;
+
+  // ── Persistence ───────────────────────────────────────────────────────────
+  function loadSaved() {
+    try { return JSON.parse(localStorage.getItem('lc_batteries') || '[]'); }
+    catch { return []; }
+  }
+
+  function saveBatteries() {
+    const list = [...batteries.values()].map(b => ({ id: b.id, name: b.name, type: b.type }));
+    localStorage.setItem('lc_batteries', JSON.stringify(list));
+  }
+
+  // ── GATT write helper (handles API version differences) ───────────────────
+  async function gattWrite(char, data, withResponse) {
+    if (withResponse) {
+      const fn = char.writeValueWithResponse ?? char.writeValue;
+      await fn.call(char, data);
+    } else {
+      const fn = char.writeValueWithoutResponse ?? char.writeValue;
+      await fn.call(char, data);
+    }
+  }
+
+  // ── BLE notification handlers ─────────────────────────────────────────────
+  function onEG4Notify(bat, event) {
+    const chunk = new Uint8Array(event.target.value.buffer);
+    for (const b of chunk) bat.buf.push(b);
+
+    while (bat.buf.length >= 83) {
+      // Find header 01 03 4E
+      let idx = -1;
+      for (let i = 0; i <= bat.buf.length - 3; i++) {
+        if (bat.buf[i] === 0x01 && bat.buf[i+1] === 0x03 && bat.buf[i+2] === 0x4E) {
+          idx = i; break;
+        }
+      }
+      if (idx === -1) { if (bat.buf.length > 200) bat.buf = bat.buf.slice(-10); break; }
+      if (bat.buf.length < idx + 83) break;
+
+      const frame = new Uint8Array(bat.buf.slice(idx, idx + 83));
+      bat.buf = bat.buf.slice(idx + 83);
+      try {
+        bat.data       = parseEG4Frame(frame);
+        bat.status     = 'LIVE';
+        bat.lastUpdate = new Date().toLocaleTimeString();
+        render();
+      } catch (e) { console.error('EG4 parse:', e.message); }
+    }
+  }
+
+  function onLiTimeNotify(bat, event) {
+    const chunk = new Uint8Array(event.target.value.buffer);
+    for (const b of chunk) bat.buf.push(b);
+
+    while (true) {
+      // Find c_13 anchor [01 93 55 AA] at buf[anchorIdx]
+      let anchorIdx = -1;
+      for (let i = 0; i <= bat.buf.length - 4; i++) {
+        if (bat.buf[i]===0x01 && bat.buf[i+1]===0x93 && bat.buf[i+2]===0x55 && bat.buf[i+3]===0xAA) {
+          anchorIdx = i; break;
+        }
+      }
+      if (anchorIdx === -1) { if (bat.buf.length > 300) bat.buf = bat.buf.slice(-10); break; }
+
+      const frameStart = anchorIdx - 3;
+      if (frameStart < 0) break;  // anchor too early; wait for prefix
+
+      // Verify 00 00 prefix at frame start
+      if (bat.buf[frameStart] !== 0x00 || bat.buf[frameStart + 1] !== 0x00) {
+        bat.buf = bat.buf.slice(anchorIdx + 4); continue;
+      }
+      if (frameStart + 105 > bat.buf.length) break;  // incomplete; wait
+
+      const frame = new Uint8Array(bat.buf.slice(frameStart, frameStart + 105));
+      bat.buf = bat.buf.slice(frameStart + 105);
+      try {
+        bat.data       = parseLiTimePayload(frame);
+        bat.status     = 'LIVE';
+        bat.lastUpdate = new Date().toLocaleTimeString();
+        render();
+      } catch (e) { console.error('LiTime parse:', e.message); }
+    }
+  }
+
+  // ── Poll ──────────────────────────────────────────────────────────────────
+  async function poll(bat) {
+    if (!bat.writeChar) return;
+    try {
+      if (bat.type === 'EG4') {
+        await gattWrite(bat.writeChar, EG4_POLL_CMD, false);   // Write Without Response
+      } else {
+        await gattWrite(bat.writeChar, POLL_LITIME, true);     // Write With Response
+      }
+    } catch (e) {
+      console.warn('Poll failed:', e.message);
+      bat.status = 'LINK TIMEOUT';
+      render();
+    }
+  }
+
+  // ── Connect ───────────────────────────────────────────────────────────────
+  async function connectGatt(bat) {
+    bat.status = 'CONNECTING';
+    bat.buf    = [];
+    render();
+
+    bat.gatt = await bat.device.gatt.connect();
+
+    if (bat.type === 'EG4') {
+      const svc = await bat.gatt.getPrimaryService(EG4_SERVICE);
+      bat.writeChar = await svc.getCharacteristic(EG4_WRITE);
+      const nc      = await svc.getCharacteristic(EG4_NOTIFY);
+      await nc.startNotifications();
+      nc.addEventListener('characteristicvaluechanged', e => onEG4Notify(bat, e));
+    } else {
+      const svc = await bat.gatt.getPrimaryService(LITIME_SERVICE);
+      bat.writeChar = await svc.getCharacteristic(LITIME_WRITE);
+      const nc      = await svc.getCharacteristic(LITIME_NOTIFY);
+      await nc.startNotifications();
+      nc.addEventListener('characteristicvaluechanged', e => onLiTimeNotify(bat, e));
+    }
+
+    bat.status = 'SYNCING';
+    clearInterval(bat.pollTimer);
+    bat.pollTimer = setInterval(() => poll(bat), 4000);
+    render();
+    await poll(bat);
+  }
+
+  function scheduleReconnect(bat) {
+    clearInterval(bat.pollTimer);
+    bat.status = 'RECONNECTING';
+    render();
+    setTimeout(() => {
+      connectGatt(bat).catch(() => { bat.status = 'LINK TIMEOUT'; render(); });
+    }, 2000);
+  }
+
+  async function connectBattery(device, type, name) {
+    const id = device.id;
+    if (batteries.has(id)) return;
+
+    const bat = {
+      id, device, type, name,
+      data: null, status: 'CONNECTING',
+      gatt: null, writeChar: null, buf: [], pollTimer: null,
+      lastUpdate: null,
+    };
+    batteries.set(id, bat);
+
+    device.addEventListener('gattserverdisconnected', () => scheduleReconnect(bat));
+    saveBatteries();
+    await connectGatt(bat);
+    render();
+  }
+
+  // ── Add battery (user gesture → BLE picker) ───────────────────────────────
+  async function addBattery(type) {
+    try {
+      const filters = type === 'EG4'
+        ? [{ services: [EG4_SERVICE]    }]
+        : [{ services: [LITIME_SERVICE] }];
+      const device = await navigator.bluetooth.requestDevice({ filters });
+      const name   = device.name || `${type} Battery`;
+      await connectBattery(device, type, name);
+    } catch (e) {
+      if (e.name !== 'NotFoundError') console.error('addBattery:', e);
+    }
+  }
+
+  function removeBattery(id) {
+    const bat = batteries.get(id);
+    if (!bat) return;
+    clearInterval(bat.pollTimer);
+    try { bat.device.gatt.disconnect(); } catch {}
+    batteries.delete(id);
+    if (selectedId === id) selectedId = null;
+    saveBatteries();
+    render();
+  }
+
+  // ── Auto-reconnect via getDevices() ───────────────────────────────────────
+  async function reconnectAll() {
+    if (!navigator.bluetooth?.getDevices) return;
+    const saved = loadSaved();
+    if (!saved.length) return;
+    let devices;
+    try { devices = await navigator.bluetooth.getDevices(); }
+    catch { return; }
+    for (const device of devices) {
+      const s = saved.find(b => b.id === device.id);
+      if (s) connectBattery(device, s.type, s.name).catch(console.warn);
+    }
+  }
+
+  // ── Rendering ─────────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function renderHeader() {
+    const live  = [...batteries.values()].filter(b => b.status === 'LIVE').length;
+    const total = batteries.size;
+    const stat  = total === 0 ? 'READY'
+      : live === total        ? `${total} LIVE`
+      :                         `${live}/${total} LIVE`;
+    return `
+      <div class="flex items-center gap-3 w-full">
+        <svg class="w-7 h-7 text-cyan-500 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+        </svg>
+        <span class="text-lg font-black text-white tracking-tighter">LITHIUM CORE</span>
+        <span class="ml-auto text-[9px] font-black text-cyan-500 tracking-[0.35em]">${esc(stat)}</span>
+      </div>`;
+  }
+
+  function renderBatCard(bat) {
+    const si  = bat.data ? getStatusInfo(bat.data.current) : null;
+    const soc = bat.data?.soc ?? 0;
+    const col = getSocColor(soc);
+    return `
+      <div data-action="select" data-id="${esc(bat.id)}"
+           class="cursor-pointer rounded-3xl bg-slate-900/40 border border-slate-800 p-5 flex flex-col gap-3 active:scale-95 transition-transform">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <div class="font-black text-base text-slate-100 truncate">${esc(bat.name.split('(')[0].trim())}</div>
+            <div class="text-[9px] font-black text-cyan-500/60 tracking-widest">${esc(bat.type.toUpperCase())}</div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            ${si ? `<span class="text-[8px] font-black ${si.color} tracking-widest">${si.text}</span>` : ''}
+            <button data-action="remove" data-id="${esc(bat.id)}"
+                    class="w-6 h-6 flex items-center justify-center text-slate-700 hover:text-slate-400 text-xs rounded-full transition-colors">✕</button>
+          </div>
+        </div>
+        ${bat.data ? `
+          <div class="flex items-center gap-4">
+            <span class="text-5xl font-black text-white tracking-tighter shrink-0">${soc}%</span>
+            <div class="flex-1 min-w-0">
+              <div class="w-full h-2 rounded-full bg-slate-900 border border-slate-800 overflow-hidden">
+                <div class="h-full rounded-full transition-all duration-1000"
+                     style="width:${soc}%;background:${col};box-shadow:0 0 10px ${col}60"></div>
+              </div>
+              <div class="flex justify-between mt-1">
+                <span class="font-mono text-[9px] text-slate-500">${bat.data.voltage.toFixed(2)}V</span>
+                <span class="font-mono text-[9px] text-slate-600">${Math.abs(bat.data.current * bat.data.voltage).toFixed(0)}W</span>
+              </div>
+            </div>
+          </div>
+        ` : `<div class="text-[9px] font-black text-slate-500 pulse">${esc(bat.status)}</div>`}
+      </div>`;
+  }
+
+  function metricCard(label, main, colorClass, sub = '') {
+    return `
+      <div class="rounded-3xl bg-slate-900/40 border border-slate-900 p-4 flex flex-col items-center justify-center gap-0.5">
+        <div class="text-slate-600 font-black text-[8px] tracking-[0.2em]">${label}</div>
+        <div class="text-2xl font-black leading-tight ${colorClass}">${main}</div>
+        ${sub ? `<div class="text-[8px] font-bold text-slate-600">${sub}</div>` : ''}
+      </div>`;
+  }
+
+  function renderDetail(bat) {
+    const d  = bat.data;
+    if (!d) return `
+      <div class="flex flex-col items-center justify-center min-h-[50vh] gap-4">
+        <div class="w-10 h-10 rounded-full border-4 border-cyan-500 border-t-transparent spin"></div>
+        <div class="text-[10px] font-black text-cyan-500 pulse">${esc(bat.status)}</div>
+      </div>`;
+
+    const si       = getStatusInfo(d.current);
+    const socColor = getSocColor(d.soc);
+
+    const activeIdx  = d.cellVoltages.reduce((a, v, i) => (v > 0.5 ? [...a, i] : a), []);
+    const cellCount  = activeIdx.length > 0 ? Math.max(...activeIdx) + 1 : 16;
+    const gridClass  = cellCount <= 4 ? 'grid-cols-4' : 'grid-cols-4 sm:grid-cols-8';
+
+    const cells = Array.from({ length: cellCount }, (_, i) => {
+      const { voltage, ghost, imbalance } = getCellLogic(d.cellVoltages, i);
+      return generateCellSvg(voltage, ghost, imbalance, `L${String(i + 1).padStart(2, '0')}`);
+    }).join('');
+
+    const tempStr = d.tempMos > 0
+      ? `${d.tempEnv}°C <span class="text-amber-600 text-sm">/ ${d.tempMos}°</span>`
+      : `${d.tempEnv}°C`;
+
+    return `
+      <div class="p-5 flex flex-col gap-5">
+        <!-- Back + title -->
+        <div class="flex items-center gap-3">
+          <button data-action="back"
+                  class="w-9 h-9 rounded-full bg-slate-900 flex items-center justify-center text-slate-400 shrink-0">
+            <svg viewBox="0 0 24 24" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M15 18l-6-6 6-6"/>
+            </svg>
+          </button>
+          <div class="flex-1 min-w-0">
+            <div class="text-xl font-black text-white tracking-tighter truncate">${esc(bat.name.split('(')[0].trim())}</div>
+            <div class="text-[8px] font-black ${si.color} tracking-widest">${si.text}</div>
+          </div>
+        </div>
+        ${bat.lastUpdate ? `<div class="text-[9px] font-mono text-slate-700 tracking-widest -mt-3">SYNC: ${esc(bat.lastUpdate)}</div>` : ''}
+
+        <!-- SOC big card -->
+        <div class="rounded-3xl bg-slate-900/40 border border-slate-900 p-6 flex flex-col items-center gap-3">
+          <div class="text-[10rem] font-black text-white leading-none tracking-tighter">${d.soc}%</div>
+          <div class="text-[9px] font-black text-emerald-500 tracking-[0.3em]">SOH ${d.soh}% HEALTH</div>
+          <div class="w-full">
+            <div class="w-full h-3 rounded-full bg-slate-900 border border-slate-800 overflow-hidden">
+              <div class="h-full rounded-full transition-all duration-1000"
+                   style="width:${d.soc}%;background:${socColor};box-shadow:0 0 18px ${socColor}80"></div>
+            </div>
+            <div class="text-[7px] font-black text-slate-700 text-center mt-1 tracking-widest">CHARGE LEVEL</div>
+          </div>
+        </div>
+
+        <!-- Metrics grid -->
+        <div class="grid grid-cols-2 gap-3">
+          ${metricCard('VOLTAGE', `${d.voltage.toFixed(3)}V`, 'text-slate-100')}
+          ${metricCard('CURRENT', `${d.current >= 0 ? '+' : ''}${d.current.toFixed(2)}A`, 'text-cyan-400',
+              `${Math.abs(d.current * d.voltage).toFixed(0)}W`)}
+          ${metricCard('TEMP', `<span>${tempStr}</span>`, 'text-amber-400')}
+          ${metricCard('CYCLES', String(d.cycles), 'text-indigo-400')}
+        </div>
+
+        <!-- Cell voltages -->
+        <div class="rounded-3xl bg-slate-900/40 border border-slate-900 p-5">
+          <div class="text-[9px] font-black text-slate-600 tracking-[0.4em] text-center mb-4">CELL VOLTAGES</div>
+          <div class="grid ${gridClass} gap-2">${cells}</div>
+        </div>
+      </div>`;
+  }
+
+  function renderList() {
+    const bats = [...batteries.values()];
+    return `
+      <div class="p-5 flex flex-col gap-5">
+        <div class="text-4xl font-black text-white tracking-tighter mt-1">POWER SOURCES</div>
+        ${bats.length === 0 ? `
+          <div class="flex flex-col items-center justify-center py-24 gap-4">
+            <svg class="w-16 h-16 text-slate-800 pulse" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
+            </svg>
+            <div class="text-slate-600 font-black tracking-widest text-sm text-center">WAITING FOR POWER INPUT...</div>
+          </div>
+        ` : bats.map(renderBatCard).join('')}
+
+        <!-- Add buttons -->
+        <div class="flex gap-3 pt-2">
+          <button data-action="add-eg4"
+                  class="flex-1 h-14 bg-cyan-950/40 border border-cyan-900/60 text-cyan-400 font-black text-sm rounded-2xl tracking-wider active:scale-95 transition-transform">
+            + EG4
+          </button>
+          <button data-action="add-litime"
+                  class="flex-1 h-14 bg-indigo-950/40 border border-indigo-900/60 text-indigo-400 font-black text-sm rounded-2xl tracking-wider active:scale-95 transition-transform">
+            + LiTime / Redodo
+          </button>
+        </div>
+        <div class="text-[8px] text-slate-700 text-center tracking-wider">Chrome on Android · Bluetooth required</div>
+      </div>`;
+  }
+
+  function render() {
+    document.getElementById('header').innerHTML = renderHeader();
+    const sel = selectedId && batteries.has(selectedId);
+    document.getElementById('app').innerHTML = sel
+      ? renderDetail(batteries.get(selectedId))
+      : renderList();
+    bindEvents();
+  }
+
+  // ── Event binding (re-bound after each render) ─────────────────────────────
+  function bindEvents() {
+    document.querySelectorAll('[data-action]').forEach(el => {
+      el.addEventListener('click', e => {
+        const action = el.dataset.action;
+        const id     = el.dataset.id;
+        if      (action === 'add-eg4')   { e.stopPropagation(); addBattery('EG4'); }
+        else if (action === 'add-litime'){ e.stopPropagation(); addBattery('LiTime'); }
+        else if (action === 'select')    { selectedId = id; render(); }
+        else if (action === 'remove')    { e.stopPropagation(); removeBattery(id); }
+        else if (action === 'back')      { selectedId = null; render(); }
+      });
+    });
+  }
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  if (!navigator.bluetooth) {
+    document.getElementById('header').innerHTML = renderHeader();
+    document.getElementById('app').innerHTML = `
+      <div class="flex flex-col items-center justify-center min-h-[70vh] p-8 text-center gap-5">
+        <div class="text-5xl">⚠️</div>
+        <div class="text-xl font-black text-slate-300">Web Bluetooth Not Available</div>
+        <div class="text-slate-500 text-sm leading-relaxed max-w-xs">
+          Use <strong class="text-white">Chrome</strong> on <strong class="text-white">Android</strong>.
+          Safari and iOS are not currently supported by the Web Bluetooth API.
+        </div>
+      </div>`;
+  } else {
+    render();
+    reconnectAll();
+  }
+  </script>
+</body>
+</html>
