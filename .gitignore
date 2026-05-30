@@ -33,6 +33,11 @@ scratch/
 !/dashboard_app/models.py
 !/dashboard_app/ui_components.py
 
+# AI assistant context files (local only)
+CLAUDE.md
+dashboard_app/MENTAL_STATE.md
+dashboard_app/ARCHITECTURAL_DECISIONS.md
+
 # Protocol research notes
 *_REPORT.md
 *_PROTOCOL.md
