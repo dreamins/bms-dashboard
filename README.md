@@ -22,7 +22,7 @@ Two ways to run it:
 - **Protocol support** — EG4 (Modbus RTU over BLE), LiTime/Redodo (custom binary protocol over BLE), and JBD-based packs (DD/A5 command protocol over BLE)
 - **Auto-detect** — identifies battery type automatically on connection
 - **Responsive UI** — sidebar + grid layout on desktop; full-screen stack on mobile
-- **Dynamic grid** — detects 4S / 8S / 16S cell configurations and adjusts the layout automatically
+- **Dynamic grid** — detects the pack's cell count (4S, 8S, 14S, 16S, …) and adjusts the layout automatically
 - **Multi-user** — per-browser-session state isolation; multiple clients can connect simultaneously
 - **Auto-reconnect** — background polling loop recovers from dropped BLE connections automatically
 - **Persistence** — saved batteries reload on next launch
@@ -52,6 +52,8 @@ The script creates a virtual environment, installs dependencies, and launches th
 3. Click **ADD** — the battery connects and starts streaming live data
 4. Click any battery card to open the full detail view with cell voltages and temperatures
 
+**Battery not showing up in the scan?** A BMS accepts only one Bluetooth connection at a time and stops advertising while connected. Close the manufacturer's app (JBD, LiTime, etc.) — or turn off Bluetooth on your phone — and scan again.
+
 ## Running Tests
 
 ```bash
@@ -66,7 +68,7 @@ test_all.bat
 
 ## Mobile PWA
 
-Open **https://dreamins.github.io/bms-dashboard/** in Chrome on Android. Battery list is saved locally and reconnects automatically on next launch. iOS is not supported (Apple does not implement Web Bluetooth in Safari).
+Open **https://dreamins.github.io/bms-dashboard/** in Chrome on Android and tap **+ Auto-Detect** (or the button for your battery type: EG4, LiTime, JBD), then pick the pack from Chrome's device list. Battery list is saved locally and reconnects automatically on next launch. iOS is not supported (Apple does not implement Web Bluetooth in Safari).
 
 ### Installing to your home screen
 
@@ -77,7 +79,7 @@ Open **https://dreamins.github.io/bms-dashboard/** in Chrome on Android. Battery
 
 The app icon appears on your home screen and launches full-screen — no browser chrome, no address bar, just like a native app.
 
-The phone-side parsers are independently tested with `node docs/parsers.test.js` (42 tests, zero dependencies).
+The phone-side parsers are independently tested with `node docs/parsers.test.js` (62 tests, zero dependencies).
 
 ## Supported Hardware
 
@@ -85,7 +87,7 @@ The phone-side parsers are independently tested with `node docs/parsers.test.js`
 |---|---|---|
 | EG4 | Modbus RTU over BLE | 4S – 16S |
 | LiTime / Redodo | Custom binary over BLE | 4S – 16S |
-| JBD-based packs | DD/A5 command protocol over BLE | 4S – 16S+ |
+| JBD-based packs (tested with UPP) | DD/A5 command protocol over BLE | 4S – 16S+ |
 
 ## Project Structure
 
