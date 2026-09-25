@@ -4,6 +4,8 @@
 // Zero dependencies — uses Node's built-in assert module only.
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import {
     crc16Modbus,
     parseEG4Frame,
@@ -565,6 +567,20 @@ test('out-of-bounds index returns ghost', () => {
 test('voltage value is returned correctly', () => {
     const { voltage } = getCellLogic([3.275, 3.274, 3.276, 3.275], 2);
     assert.ok(near(voltage, 3.276));
+});
+
+// ---------------------------------------------------------------------------
+// Cache-busting: index.html must import parsers.js?v=<hash of parsers.js>.
+// GitHub Pages serves with max-age=600, so without a changed URL browsers pair
+// a fresh index.html with a stale parsers.js and the module import fails.
+// ---------------------------------------------------------------------------
+
+test('index.html imports parsers.js with the current content hash', () => {
+    const read = (f) => readFileSync(new URL(f, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+    const hash = createHash('sha256').update(read('./parsers.js')).digest('hex').slice(0, 8);
+    const m = read('./index.html').match(/from '\.\/parsers\.js\?v=([0-9a-f]+)'/);
+    assert.ok(m, "index.html must import './parsers.js?v=<hash>'");
+    assert.equal(m[1], hash, `parsers.js changed — update the import in index.html to './parsers.js?v=${hash}'`);
 });
 
 // ---------------------------------------------------------------------------
