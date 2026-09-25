@@ -3,6 +3,7 @@
 //
 // EG4:    Modbus RTU, 83-byte frames, big-endian
 // LiTime: Proprietary c_13/c_16 protocol, 105-byte frames, little-endian
+// JBD:    Proprietary "DD A5 <cmd> ... 77" request/response protocol, big-endian
 
 // ---------------------------------------------------------------------------
 // EG4 — CRC16 Modbus
@@ -118,6 +119,143 @@ export function parseLiTimePayload(buf) {
         status:  0,
         rawHex:  Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join(''),
     };
+}
+
+// ---------------------------------------------------------------------------
+// JBD (Jiabaida) — "DD A5 <cmd> <len> <data> <chk> 77" proprietary protocol
+// ---------------------------------------------------------------------------
+
+export const JBD_CMD_BASIC = 0x03;
+export const JBD_CMD_CELLS = 0x04;
+
+// 16-bit additive checksum: (0x10000 - sum(bytes)) & 0xFFFF, stored big-endian.
+// Caller passes the exact byte range the checksum covers:
+//   request:  [cmd, len, ...data]
+//   response: [status, len, ...data]
+export function jbdChecksum(bytes) {
+    let sum = 0;
+    for (const b of bytes) sum += b;
+    return (0x10000 - sum) & 0xFFFF;
+}
+
+// Build a read request: DD A5 <cmd> 00 <chk_hi> <chk_lo> 77.
+// Only read commands exist here — this protocol's write (0x5A) commands are
+// never used by this app.
+export function buildJbdRequest(cmd) {
+    const len = 0x00;
+    const cs  = jbdChecksum([cmd, len]);
+    return new Uint8Array([0xDD, 0xA5, cmd, len, (cs >> 8) & 0xFF, cs & 0xFF, 0x77]);
+}
+
+export const JBD_REQUEST_BASIC = buildJbdRequest(JBD_CMD_BASIC);
+export const JBD_REQUEST_CELLS = buildJbdRequest(JBD_CMD_CELLS);
+
+// Reassembles JBD BLE notifications (delivered in ≤20-byte fragments) into
+// complete, checksum-validated frames. Pure/stateful but browser-API-free —
+// feed it raw byte chunks, get back zero or more validated frames.
+const JBD_MAX_BUFFER = 300;
+
+export class JbdReassembler {
+    constructor() {
+        this.buf = [];
+    }
+
+    // Accepts a Uint8Array/array-like chunk. Returns an array of complete,
+    // validated frames: { cmd, status, data (Uint8Array) }.
+    // Malformed frames (bad footer/checksum) are dropped byte-by-byte and
+    // the buffer resyncs on the next 0xDD.
+    push(chunk) {
+        for (const b of chunk) this.buf.push(b);
+
+        const frames = [];
+        while (true) {
+            const idx = this.buf.indexOf(0xDD);
+            if (idx === -1) { this.buf.length = 0; break; }
+            if (idx > 0) this.buf.splice(0, idx);
+
+            if (this.buf.length < 4) break;   // need cmd/status/len header
+
+            const len   = this.buf[3];
+            const total = len + 7;
+            if (this.buf.length < total) {
+                if (this.buf.length > JBD_MAX_BUFFER) this.buf.splice(0, this.buf.length - 10);
+                break;   // frame not fully reassembled yet; wait for more fragments
+            }
+
+            const frame  = this.buf.slice(0, total);
+            const cmd    = frame[1];
+            const status = frame[2];
+            const data   = frame.slice(4, 4 + len);
+            const recv   = (frame[4 + len] << 8) | frame[4 + len + 1];
+            const calc   = jbdChecksum([status, len, ...data]);
+
+            if (frame[total - 1] !== 0x77 || calc !== recv) {
+                this.buf.splice(0, 1);   // drop the stray/bad 0xDD, resync
+                continue;
+            }
+
+            this.buf.splice(0, total);
+            frames.push({ cmd, status, data: new Uint8Array(data) });
+        }
+        return frames;
+    }
+}
+
+// Parse a JBD basic-info (cmd 0x03) data payload (frame[4:4+len] — i.e. the
+// bytes already stripped of header/checksum/footer by JbdReassembler).
+export function parseJbdBasic(bytes) {
+    const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (buf.length < 23) throw new Error(`JBD basic payload too short: ${buf.length} bytes`);
+
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+
+    const voltage         = view.getUint16(0, false) / 100;   // BE ×0.01 → V
+    const current         = view.getInt16(2, false) / 100;    // BE signed ×0.01 → A (charging positive; matches UI, do NOT invert)
+    const nominalCapacity = view.getUint16(6, false) / 100;   // BE ×0.01 → Ah
+    const cycles          = view.getUint16(8, false);         // BE
+    const status          = view.getUint16(16, false);        // BE protection bitmask
+    const soc             = buf[19];                          // RSOC %
+    const ntcCount        = buf[22];
+
+    let offset = 23;
+    const temps = [];
+    for (let i = 0; i < ntcCount; i++) {
+        const raw = view.getUint16(offset, false);
+        temps.push((raw - 2731) / 10);   // 0.1K → °C
+        offset += 2;
+    }
+    const tempEnv = temps.length >= 1 ? Math.round(temps[0]) : 0;   // NTC1
+    const tempMos = temps.length >= 2 ? Math.round(temps[1]) : 0;   // NTC2
+
+    // Optional tail: humidity(1) + alarm(2) + full-charge cap(2) + remaining(2) + balance current(2) = 9 bytes.
+    let soh = 0;
+    if (buf.length >= offset + 9) {
+        const fullChargeAh = view.getUint16(offset + 3, false) / 100;
+        if (fullChargeAh > 0 && nominalCapacity > 0) {
+            soh = Math.min(100, Math.round((fullChargeAh / nominalCapacity) * 100));
+        }
+    }
+
+    return {
+        voltage, current, soc, soh, cycles, status,
+        tempEnv, tempMos,
+        rawHex: Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join(''),
+    };
+}
+
+// Parse a JBD cell-voltages (cmd 0x04) data payload. u16 BE mV per cell.
+// Pads to at least 16 entries with 0; keeps all entries if more than 16.
+export function parseJbdCells(bytes) {
+    const buf   = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const view  = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const count = Math.floor(buf.length / 2);
+
+    const cells = [];
+    for (let i = 0; i < count; i++) {
+        cells.push(view.getUint16(i * 2, false) / 1000);   // BE ÷1000 → V
+    }
+    while (cells.length < 16) cells.push(0);
+    return cells;
 }
 
 // ---------------------------------------------------------------------------

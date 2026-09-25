@@ -29,6 +29,7 @@ scratch/
 !/dashboard_app/dashboard.py
 !/dashboard_app/eg4_bms.py
 !/dashboard_app/litime_bms.py
+!/dashboard_app/jbd_bms.py
 !/dashboard_app/mock_ble.py
 !/dashboard_app/models.py
 !/dashboard_app/ui_components.py

@@ -11,7 +11,7 @@ from models import BatteryData
 from dashboard import (
     state, BatteryState, ClientState,
     bms_callback, get_soc_color, get_cell_logic, get_status_info,
-    provision_node_task, save_config, load_config,
+    provision_node_task, save_config, load_config, get_driver_class,
 )
 
 
@@ -199,6 +199,107 @@ class TestBMSLifecycleContracts(unittest.IsolatedAsyncioTestCase):
             await poll_battery(bat)
         self.assertEqual(bat.local_status, "CONN ERROR")
         state.batteries.pop(mac, None)
+
+
+# ---------------------------------------------------------------------------
+# Driver-mapping helper contracts
+# ---------------------------------------------------------------------------
+
+class TestDriverMappingContracts(unittest.TestCase):
+    def test_eg4_type_maps_to_eg4_driver(self):
+        import eg4_bms
+        self.assertIs(get_driver_class('EG4'), eg4_bms.EG4BMS)
+
+    def test_litime_type_maps_to_litime_driver(self):
+        import litime_bms
+        self.assertIs(get_driver_class('LiTime/Redodo'), litime_bms.LiTimeBMS)
+
+    def test_jbd_type_maps_to_jbd_driver(self):
+        import jbd_bms
+        self.assertIs(get_driver_class('JBD'), jbd_bms.JBDBMS)
+
+    def test_unknown_type_defaults_to_eg4_driver(self):
+        import eg4_bms
+        self.assertIs(get_driver_class('Something Else'), eg4_bms.EG4BMS)
+
+    def test_mapping_honors_monkeypatched_module_attribute(self):
+        # Demo mode replaces jbd_bms.JBDBMS with a mock at import time; the
+        # helper must resolve the class from the module at call time, not
+        # from a name captured earlier, for that monkeypatch to take effect.
+        import jbd_bms
+        original = jbd_bms.JBDBMS
+        try:
+            sentinel = MagicMock()
+            jbd_bms.JBDBMS = sentinel
+            self.assertIs(get_driver_class('JBD'), sentinel)
+        finally:
+            jbd_bms.JBDBMS = original
+
+
+# ---------------------------------------------------------------------------
+# Auto-detect ordering contracts (ff00 -> JBD, elif ffe0 -> LiTime, else EG4)
+# ---------------------------------------------------------------------------
+
+def _fake_bleak_client_factory(service_uuids):
+    """A BleakClient(...) stand-in usable as `async with BleakClient(...) as c`."""
+    client = MagicMock()
+    client.services = [MagicMock(uuid=u) for u in service_uuids]
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=client)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return MagicMock(return_value=cm)
+
+
+class TestAutoDetectContracts(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        os.environ['LITHIUM_CONFIG_PATH'] = os.path.join(
+            os.path.dirname(__file__), '_autodetect_test.json'
+        )
+
+    async def asyncTearDown(self):
+        path = os.environ.pop('LITHIUM_CONFIG_PATH', None)
+        if path and os.path.exists(path):
+            os.remove(path)
+
+    async def _probe(self, service_uuids, suffix):
+        from dashboard import poll_battery
+        mac = f"DD:EE:FF:00:11:{suffix}"
+        bat = BatteryState("Probe", mac, "Auto-Detect")
+        state.batteries[mac] = bat
+
+        mock_driver_instance = AsyncMock()
+        mock_driver_instance.fetch_metadata = AsyncMock(return_value={})
+        mock_driver_class = MagicMock(return_value=mock_driver_instance)
+        fake_factory = _fake_bleak_client_factory(service_uuids)
+        try:
+            with patch('bleak.BleakClient', fake_factory), \
+                 patch('eg4_bms.EG4BMS', mock_driver_class), \
+                 patch('litime_bms.LiTimeBMS', mock_driver_class), \
+                 patch('jbd_bms.JBDBMS', mock_driver_class), \
+                 patch('dashboard.layout.refresh'):
+                await poll_battery(bat)
+        finally:
+            state.batteries.pop(mac, None)
+        return bat.bms_type
+
+    async def test_ff00_service_detected_as_jbd(self):
+        result = await self._probe(["0000ff00-0000-1000-8000-00805f9b34fb"], "01")
+        self.assertEqual(result, 'JBD')
+
+    async def test_ffe0_service_detected_as_litime(self):
+        result = await self._probe(["0000ffe0-0000-1000-8000-00805f9b34fb"], "02")
+        self.assertEqual(result, 'LiTime/Redodo')
+
+    async def test_no_known_service_defaults_to_eg4(self):
+        result = await self._probe(["0000abcd-0000-1000-8000-00805f9b34fb"], "03")
+        self.assertEqual(result, 'EG4')
+
+    async def test_ff00_takes_priority_over_ffe0(self):
+        result = await self._probe(
+            ["0000ff00-0000-1000-8000-00805f9b34fb", "0000ffe0-0000-1000-8000-00805f9b34fb"],
+            "04",
+        )
+        self.assertEqual(result, 'JBD')
 
 
 # ---------------------------------------------------------------------------

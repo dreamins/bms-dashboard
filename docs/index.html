@@ -31,6 +31,8 @@
   <script type="module">
   import {
     parseEG4Frame, parseLiTimePayload, buildLiTimeFrame, EG4_POLL_CMD,
+    parseJbdBasic, parseJbdCells, JbdReassembler,
+    JBD_CMD_BASIC, JBD_CMD_CELLS, JBD_REQUEST_BASIC, JBD_REQUEST_CELLS,
     getCellLogic, getSocColor, getStatusInfo, generateCellSvg,
   } from './parsers.js';
 
@@ -41,6 +43,9 @@
   const LITIME_SERVICE = '0000ffe0-0000-1000-8000-00805f9b34fb';
   const LITIME_WRITE   = '0000ffe2-0000-1000-8000-00805f9b34fb';
   const LITIME_NOTIFY  = '0000ffe1-0000-1000-8000-00805f9b34fb';
+  const JBD_SERVICE    = '0000ff00-0000-1000-8000-00805f9b34fb';
+  const JBD_WRITE      = '0000ff02-0000-1000-8000-00805f9b34fb';
+  const JBD_NOTIFY     = '0000ff01-0000-1000-8000-00805f9b34fb';
   const POLL_LITIME    = buildLiTimeFrame(0x13);
 
   // ── State ─────────────────────────────────────────────────────────────────
@@ -130,12 +135,39 @@
     }
   }
 
+  // JBD notifications reassemble via a JbdReassembler kept on the battery state.
+  // Cells (0x04) are cached and merged in whenever a basic-info (0x03) frame
+  // arrives — the two live on separate poll requests.
+  function onJbdNotify(bat, event) {
+    const chunk = new Uint8Array(event.target.value.buffer);
+    for (const f of bat.jbd.push(chunk)) {
+      if (f.status !== 0) continue;   // non-zero status = BMS error response
+      try {
+        if (f.cmd === JBD_CMD_CELLS) {
+          bat.cells = parseJbdCells(f.data);
+        } else if (f.cmd === JBD_CMD_BASIC) {
+          bat.data       = { ...parseJbdBasic(f.data), cellVoltages: bat.cells ?? new Array(16).fill(0) };
+          bat.status     = 'LIVE';
+          bat.lastUpdate = new Date().toLocaleTimeString();
+          render();
+        }
+      } catch (e) { console.error('JBD parse:', e.message); }
+    }
+  }
+
   // ── Poll ──────────────────────────────────────────────────────────────────
   async function poll(bat) {
     if (!bat.writeChar) return;
     try {
       if (bat.type === 'EG4') {
         await gattWrite(bat.writeChar, EG4_POLL_CMD, false);   // Write Without Response
+      } else if (bat.type === 'JBD') {
+        // Quirk: the pack ignores the very first request right after
+        // start_notify, so cells (a miss here is harmless) go first and
+        // basic info — which actually emits a reading — follows.
+        await gattWrite(bat.writeChar, JBD_REQUEST_CELLS, false);
+        await new Promise(r => setTimeout(r, 300));
+        await gattWrite(bat.writeChar, JBD_REQUEST_BASIC, false);
       } else {
         await gattWrite(bat.writeChar, POLL_LITIME, true);     // Write With Response
       }
@@ -150,6 +182,8 @@
   async function connectGatt(bat) {
     bat.status = 'CONNECTING';
     bat.buf    = [];
+    bat.jbd    = new JbdReassembler();
+    bat.cells  = null;
     render();
 
     bat.gatt = await bat.device.gatt.connect();
@@ -160,6 +194,12 @@
       const nc      = await svc.getCharacteristic(EG4_NOTIFY);
       await nc.startNotifications();
       nc.addEventListener('characteristicvaluechanged', e => onEG4Notify(bat, e));
+    } else if (bat.type === 'JBD') {
+      const svc = await bat.gatt.getPrimaryService(JBD_SERVICE);
+      bat.writeChar = await svc.getCharacteristic(JBD_WRITE);
+      const nc      = await svc.getCharacteristic(JBD_NOTIFY);
+      await nc.startNotifications();
+      nc.addEventListener('characteristicvaluechanged', e => onJbdNotify(bat, e));
     } else {
       const svc = await bat.gatt.getPrimaryService(LITIME_SERVICE);
       bat.writeChar = await svc.getCharacteristic(LITIME_WRITE);
@@ -193,6 +233,7 @@
       data: null, status: 'CONNECTING',
       gatt: null, writeChar: null, buf: [], pollTimer: null,
       lastUpdate: null,
+      jbd: new JbdReassembler(), cells: null,   // JBD-only; harmless for other types
     };
     batteries.set(id, bat);
 
@@ -202,15 +243,40 @@
     render();
   }
 
+  // Probe a connected GATT server's services to classify the BMS.
+  // Priority: 0xff00 → JBD, then 0xffe0 → LiTime/Redodo, else EG4.
+  // (Some JBD modules also expose 0xffe0, so JBD must be checked first.)
+  async function detectType(gatt) {
+    const services = await gatt.getPrimaryServices();
+    const uuids    = services.map(s => s.uuid.toLowerCase());
+    if (uuids.includes(JBD_SERVICE))    return 'JBD';
+    if (uuids.includes(LITIME_SERVICE)) return 'LiTime';
+    return 'EG4';
+  }
+
   // ── Add battery (user gesture → BLE picker) ───────────────────────────────
   async function addBattery(type) {
     try {
-      const filters = type === 'EG4'
-        ? [{ services: [EG4_SERVICE]    }]
-        : [{ services: [LITIME_SERVICE] }];
-      const device = await navigator.bluetooth.requestDevice({ filters });
-      const name   = device.name || `${type} Battery`;
-      await connectBattery(device, type, name);
+      let device;
+      if (type === 'Auto') {
+        // Unknown type: accept any device, then probe its services once connected.
+        device = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: [EG4_SERVICE, JBD_SERVICE, LITIME_SERVICE],
+        });
+      } else {
+        const filters = type === 'EG4'  ? [{ services: [EG4_SERVICE]    }]
+                      : type === 'JBD'  ? [{ services: [JBD_SERVICE]    }]
+                      :                   [{ services: [LITIME_SERVICE] }];
+        device = await navigator.bluetooth.requestDevice({ filters });
+      }
+
+      const resolvedType = type === 'Auto'
+        ? await detectType(await device.gatt.connect())
+        : type;
+
+      const name = device.name || `${resolvedType} Battery`;
+      await connectBattery(device, resolvedType, name);
     } catch (e) {
       if (e.name !== 'NotFoundError') console.error('addBattery:', e);
     }
@@ -393,14 +459,22 @@
         ` : bats.map(renderBatCard).join('')}
 
         <!-- Add buttons -->
-        <div class="flex gap-3 pt-2">
+        <div class="flex flex-wrap gap-3 pt-2">
           <button data-action="add-eg4"
-                  class="flex-1 h-14 bg-cyan-950/40 border border-cyan-900/60 text-cyan-400 font-black text-sm rounded-2xl tracking-wider active:scale-95 transition-transform">
+                  class="flex-1 min-w-[45%] h-14 bg-cyan-950/40 border border-cyan-900/60 text-cyan-400 font-black text-sm rounded-2xl tracking-wider active:scale-95 transition-transform">
             + EG4
           </button>
+          <button data-action="add-jbd"
+                  class="flex-1 min-w-[45%] h-14 bg-fuchsia-950/40 border border-fuchsia-900/60 text-fuchsia-400 font-black text-sm rounded-2xl tracking-wider active:scale-95 transition-transform">
+            + JBD
+          </button>
           <button data-action="add-litime"
-                  class="flex-1 h-14 bg-indigo-950/40 border border-indigo-900/60 text-indigo-400 font-black text-sm rounded-2xl tracking-wider active:scale-95 transition-transform">
+                  class="flex-1 min-w-[45%] h-14 bg-indigo-950/40 border border-indigo-900/60 text-indigo-400 font-black text-sm rounded-2xl tracking-wider active:scale-95 transition-transform">
             + LiTime / Redodo
+          </button>
+          <button data-action="add-auto"
+                  class="flex-1 min-w-[45%] h-14 bg-slate-800/40 border border-slate-700/60 text-slate-300 font-black text-sm rounded-2xl tracking-wider active:scale-95 transition-transform">
+            + Auto-Detect
           </button>
         </div>
         <div class="text-[8px] text-slate-700 text-center tracking-wider">Chrome on Android · Bluetooth required</div>
@@ -423,7 +497,9 @@
         const action = el.dataset.action;
         const id     = el.dataset.id;
         if      (action === 'add-eg4')   { e.stopPropagation(); addBattery('EG4'); }
+        else if (action === 'add-jbd')   { e.stopPropagation(); addBattery('JBD'); }
         else if (action === 'add-litime'){ e.stopPropagation(); addBattery('LiTime'); }
+        else if (action === 'add-auto')  { e.stopPropagation(); addBattery('Auto'); }
         else if (action === 'select')    { selectedId = id; render(); }
         else if (action === 'remove')    { e.stopPropagation(); removeBattery(id); }
         else if (action === 'back')      { selectedId = null; render(); }

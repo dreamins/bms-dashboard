@@ -17,6 +17,7 @@ class MockDevice:
 MOCK_DEVICES = [
     MockDevice("AA:BB:CC:00:00:01", "EG4 Test Battery"),
     MockDevice("AA:BB:CC:00:00:02", "LiTime Test Battery"),
+    MockDevice("AA:BB:CC:00:00:03", "JBD Test Battery"),
 ]
 
 
@@ -41,6 +42,19 @@ def _litime_data() -> BatteryData:
         cell_voltages=[3.275, 3.274, 3.276, 3.275] + [0.0] * 12,
         temp_env=20, temp_mos=25,
         soc=91, soh=100, cycles=15, status=0,
+        raw_hex="",
+    )
+
+
+def _jbd_data() -> BatteryData:
+    return BatteryData(
+        voltage=53.90, current=1.50,
+        cell_voltages=[
+            3.850, 3.852, 3.849, 3.851, 3.850, 3.850, 3.851, 3.851,
+            3.850, 3.849, 3.851, 3.850, 3.853, 3.852,
+        ] + [0.0] * 2,
+        temp_env=24, temp_mos=23,
+        soc=62, soh=99, cycles=8, status=0,
         raw_hex="",
     )
 
@@ -81,6 +95,25 @@ class MockLiTimeBMS:
 
     async def fetch_metadata(self) -> dict:
         return {"model": "LiTime Test", "hw_version": "1.0"}
+
+    async def disconnect(self):
+        self.is_connected = False
+
+
+class MockJBDBMS:
+    def __init__(self, address: str):
+        self.address = address
+        self.on_data_callback = None
+        self.is_connected = False
+
+    async def connect(self):
+        await asyncio.sleep(0.1)
+        self.is_connected = True
+
+    async def poll(self):
+        await asyncio.sleep(0.05)
+        if self.on_data_callback:
+            self.on_data_callback(_jbd_data())
 
     async def disconnect(self):
         self.is_connected = False

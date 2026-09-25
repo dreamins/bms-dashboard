@@ -1,6 +1,6 @@
 # Lithium Core
 
-Real-time Bluetooth monitoring for **EG4** and **LiTime/Redodo** lithium battery packs — voltage, current, cell voltages, temperature, SOC/SOH, and cycle count.
+Real-time Bluetooth monitoring for **EG4**, **LiTime/Redodo**, and **JBD**-based lithium battery packs — voltage, current, cell voltages, temperature, SOC/SOH, and cycle count.
 
 Two ways to run it:
 - **Desktop** — Python app on Windows, Linux, or Mac (`run.bat` / `./run.sh`)
@@ -19,7 +19,7 @@ Two ways to run it:
 - **Live telemetry** — voltage, current, power, state of charge, state of health, temperature, cycle count
 - **Cell-level detail** — individual cell voltages with imbalance highlighting and ghost cell detection
 - **Multi-battery** — monitor several packs simultaneously, each polled independently
-- **Protocol support** — EG4 (Modbus RTU over BLE) and LiTime/Redodo (custom binary protocol over BLE)
+- **Protocol support** — EG4 (Modbus RTU over BLE), LiTime/Redodo (custom binary protocol over BLE), and JBD-based packs (DD/A5 command protocol over BLE)
 - **Auto-detect** — identifies battery type automatically on connection
 - **Responsive UI** — sidebar + grid layout on desktop; full-screen stack on mobile
 - **Dynamic grid** — detects 4S / 8S / 16S cell configurations and adjusts the layout automatically
@@ -62,7 +62,7 @@ test_all.bat
 ./test_all.sh
 ```
 
-149 tests covering protocol parsing contracts, BMS lifecycle, callback propagation, persistence, and UI logic.
+208 tests covering protocol parsing contracts, BMS lifecycle, callback propagation, persistence, and UI logic.
 
 ## Mobile PWA
 
@@ -85,6 +85,7 @@ The phone-side parsers are independently tested with `node docs/parsers.test.js`
 |---|---|---|
 | EG4 | Modbus RTU over BLE | 4S – 16S |
 | LiTime / Redodo | Custom binary over BLE | 4S – 16S |
+| JBD-based packs | DD/A5 command protocol over BLE | 4S – 16S+ |
 
 ## Project Structure
 
@@ -96,7 +97,8 @@ The phone-side parsers are independently tested with `node docs/parsers.test.js`
 │   ├── dashboard.py          # UI and application logic
 │   ├── eg4_bms.py            # EG4 BLE driver
 │   ├── litime_bms.py         # LiTime/Redodo BLE driver
+│   ├── jbd_bms.py            # JBD BLE driver
 │   ├── models.py             # BatteryData dataclass
-│   └── tests/                # 149 tests
+│   └── tests/                # 208 tests
 └── docs/                     # Android PWA (Web Bluetooth, vanilla JS)
 ```

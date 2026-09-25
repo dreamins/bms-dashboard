@@ -523,15 +523,15 @@ class TestUIInteractionFlow(unittest.TestCase):
     def test_startup_scan_finds_mock_devices(self):
         """Status bar should report found devices after auto-scan at startup."""
         page = self._page()
-        page.wait_for_selector("text=FOUND 2 SOURCES", timeout=8000)
+        page.wait_for_selector("text=FOUND 3 SOURCES", timeout=8000)
         page.close()
 
     def test_scan_button_populates_dropdown(self):
-        """Clicking SCAN populates SELECT SOURCE with the two mock devices."""
+        """Clicking SCAN populates SELECT SOURCE with the three mock devices."""
         page = self._page()
         desktop = self._desktop(page)
         desktop.locator("button", has_text="SCAN").click()
-        page.wait_for_selector("text=FOUND 2 SOURCES", timeout=8000)
+        page.wait_for_selector("text=FOUND 3 SOURCES", timeout=8000)
         # Open dropdown and verify options are present
         desktop.locator(".q-select").nth(0).click()
         page.locator(".q-menu").wait_for(state="visible", timeout=5000)
@@ -543,6 +543,10 @@ class TestUIInteractionFlow(unittest.TestCase):
         self.assertTrue(
             menu.locator(".q-item").filter(has_text="LiTime Test Battery").is_visible(),
             "LiTime Test Battery not in dropdown after SCAN",
+        )
+        self.assertTrue(
+            menu.locator(".q-item").filter(has_text="JBD Test Battery").is_visible(),
+            "JBD Test Battery not in dropdown after SCAN",
         )
         page.keyboard.press("Escape")
         page.close()

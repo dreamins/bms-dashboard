@@ -12,6 +12,13 @@ import {
     parseLiTimePayload,
     getCellLogic,
     EG4_POLL_CMD,
+    jbdChecksum,
+    buildJbdRequest,
+    parseJbdBasic,
+    parseJbdCells,
+    JbdReassembler,
+    JBD_CMD_BASIC,
+    JBD_CMD_CELLS,
 } from './parsers.js';
 
 // ---------------------------------------------------------------------------
@@ -78,6 +85,70 @@ function makeLiTimeFrame({
     view.setUint16(96, cycles, true);
     frame[104] = litimeChecksum(frame);
     return frame;
+}
+
+function hexToBytes(hex) {
+    const out = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+    return out;
+}
+
+// Build a JBD basic-info (cmd 0x03) *data payload* (not the full DD..77 frame).
+function makeJbdBasicData({
+    voltageRaw = 5399, currentRaw = 203, remainRaw = 994, nominalRaw = 1750,
+    cycles = 1, protection = 0, soc = 57, cellCount = 14,
+    ntcCount = 2, temps = [3129, 2958],
+    includeTail = true, fullCapRaw = 1750,
+} = {}) {
+    const tailLen = includeTail ? 9 : 0;
+    const len     = 23 + temps.length * 2 + tailLen;
+    const data    = new Uint8Array(len);
+    const view    = new DataView(data.buffer);
+    view.setUint16(0,  voltageRaw, false);
+    view.setInt16(2,   currentRaw, false);
+    view.setUint16(4,  remainRaw,  false);
+    view.setUint16(6,  nominalRaw, false);
+    view.setUint16(8,  cycles,     false);
+    view.setUint16(16, protection, false);
+    data[19] = soc;
+    data[21] = cellCount;
+    data[22] = ntcCount;
+    let off = 23;
+    for (const t of temps) { view.setUint16(off, t, false); off += 2; }
+    if (includeTail) {
+        // humidity(1) + alarm(2) + full-charge cap(2) + remaining(2) + balance current(2)
+        view.setUint16(off + 3, fullCapRaw, false);
+    }
+    return data;
+}
+
+// Wrap a data payload into a full DD <cmd> <status> <len> <data> <chk> 77 frame.
+function makeJbdFrame(cmd, status, data) {
+    const len   = data.length;
+    const total = len + 7;
+    const frame = new Uint8Array(total);
+    frame[0] = 0xDD; frame[1] = cmd; frame[2] = status; frame[3] = len;
+    frame.set(data, 4);
+    const cs = jbdChecksum([status, len, ...data]);
+    frame[4 + len]     = (cs >> 8) & 0xFF;
+    frame[4 + len + 1] = cs & 0xFF;
+    frame[4 + len + 2] = 0x77;
+    return frame;
+}
+
+function makeJbdCellsData(cellRaws) {
+    const data = new Uint8Array(cellRaws.length * 2);
+    const view = new DataView(data.buffer);
+    cellRaws.forEach((v, i) => view.setUint16(i * 2, v, false));
+    return data;
+}
+
+function concatBytes(...chunks) {
+    const total = chunks.reduce((n, c) => n + c.length, 0);
+    const out   = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) { out.set(c, off); off += c.length; }
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +329,196 @@ test('bad checksum throws', () => {
 
 test('payload shorter than 105 bytes throws', () => {
     assert.throws(() => parseLiTimePayload(new Uint8Array(104)));
+});
+
+// ---------------------------------------------------------------------------
+// JBD checksum / request builder
+// ---------------------------------------------------------------------------
+console.log('\nJBD checksum / request builder');
+
+test('jbdChecksum([0x03,0x00]) = 0xFFFD', () => {
+    assert.equal(jbdChecksum([0x03, 0x00]), 0xFFFD);
+});
+
+test('jbdChecksum([0x04,0x00]) = 0xFFFC', () => {
+    assert.equal(jbdChecksum([0x04, 0x00]), 0xFFFC);
+});
+
+test('buildJbdRequest(0x03) = DD A5 03 00 FF FD 77 (read basic info)', () => {
+    assert.deepEqual(Array.from(buildJbdRequest(0x03)), Array.from(hexToBytes('DDA50300FFFD77')));
+});
+
+test('buildJbdRequest(0x04) = DD A5 04 00 FF FC 77 (read cell voltages)', () => {
+    assert.deepEqual(Array.from(buildJbdRequest(0x04)), Array.from(hexToBytes('DDA50400FFFC77')));
+});
+
+// ---------------------------------------------------------------------------
+// JBD real frames — verified against the user's real 14S pack
+// ---------------------------------------------------------------------------
+console.log('\nJBD real frames');
+
+test('real basic-info frame: 53.99V, +2.03A, soc 57, cycles 1, temps 40/23, soh 100', () => {
+    const frame = hexToBytes(
+        'dd030024151700cb03e206d6000134ea0000000000003239030e020c390b8e00000006d603e20000f8e877'
+    );
+    const [f] = new JbdReassembler().push(frame);
+    assert.ok(f, 'frame should be reassembled');
+    assert.equal(f.cmd, JBD_CMD_BASIC);
+    assert.equal(f.status, 0);
+
+    const d = parseJbdBasic(f.data);
+    assert.ok(near(d.voltage, 53.99));
+    assert.ok(near(d.current, 2.03));
+    assert.equal(d.soc, 57);
+    assert.equal(d.cycles, 1);
+    assert.equal(d.tempEnv, 40);
+    assert.equal(d.tempMos, 23);
+    assert.equal(d.soh, 100);
+});
+
+test('real cell-voltages frame: 14 cells matching known mV readings', () => {
+    const frame = hexToBytes('dd04001c0f120f120f100f110f100f100f110f110f100f0f0f110f100f130f12fe2677');
+    const [f] = new JbdReassembler().push(frame);
+    assert.ok(f, 'frame should be reassembled');
+    assert.equal(f.cmd, JBD_CMD_CELLS);
+
+    const cells = parseJbdCells(f.data);
+    const expected = [
+        3.858, 3.858, 3.856, 3.857, 3.856, 3.856, 3.857,
+        3.857, 3.856, 3.855, 3.857, 3.856, 3.859, 3.858,
+    ];
+    assert.equal(cells.length, 16);   // padded from 14 to 16
+    expected.forEach((v, i) => assert.ok(near(cells[i], v), `cell ${i}: ${cells[i]} != ${v}`));
+    assert.equal(cells[14], 0);
+    assert.equal(cells[15], 0);
+});
+
+// ---------------------------------------------------------------------------
+// JBD notification reassembly
+// ---------------------------------------------------------------------------
+console.log('\nJBD notification reassembly');
+
+test('fragmented basic-info frame reassembles only once complete', () => {
+    const frag1 = hexToBytes('dd030024151700cb03e206d6000134ea00000000');
+    const frag2 = hexToBytes('00003239030e020c390b8e00000006d603e20000');
+    const frag3 = hexToBytes('f8e877');
+
+    const r = new JbdReassembler();
+    assert.equal(r.push(frag1).length, 0);
+    assert.equal(r.push(frag2).length, 0);
+    const frames = r.push(frag3);
+    assert.equal(frames.length, 1);
+    assert.equal(frames[0].cmd, JBD_CMD_BASIC);
+    assert.ok(near(parseJbdBasic(frames[0].data).voltage, 53.99));
+});
+
+test('fragmented cell-voltages frame reassembles only once complete', () => {
+    const frag1 = hexToBytes('dd04001c0f120f120f100f110f100f100f110f11');
+    const frag2 = hexToBytes('0f100f0f0f110f100f130f12fe2677');
+
+    const r = new JbdReassembler();
+    assert.equal(r.push(frag1).length, 0);
+    const frames = r.push(frag2);
+    assert.equal(frames.length, 1);
+    assert.ok(near(parseJbdCells(frames[0].data)[0], 3.858));
+});
+
+test('resync after garbage: leading non-DD junk is discarded', () => {
+    const validFrame = makeJbdFrame(JBD_CMD_BASIC, 0x00, makeJbdBasicData());
+    const chunk       = concatBytes(new Uint8Array([0x00, 0x11, 0x22]), validFrame);
+
+    const frames = new JbdReassembler().push(chunk);
+    assert.equal(frames.length, 1);
+    assert.equal(frames[0].cmd, JBD_CMD_BASIC);
+});
+
+test('resync after garbage: a bogus/incomplete DD header before a valid frame is dropped', () => {
+    const validFrame = makeJbdFrame(JBD_CMD_BASIC, 0x00, makeJbdBasicData());
+    // Stray 0xDD followed by junk that forms a complete-but-invalid candidate
+    // frame (footer byte 0x00 != 0x77) before the real frame.
+    const bogus = new Uint8Array([0xDD, 0xAA, 0xBB, 0x01, 0xCC, 0xCC, 0x00]);
+    const chunk = concatBytes(bogus, validFrame);
+
+    const frames = new JbdReassembler().push(chunk);
+    assert.equal(frames.length, 1);
+    assert.equal(frames[0].cmd, JBD_CMD_BASIC);
+});
+
+test('bad checksum in an otherwise well-formed frame is rejected, no frame emitted', () => {
+    const frame = new Uint8Array(makeJbdFrame(JBD_CMD_BASIC, 0x00, makeJbdBasicData()));
+    frame[frame.length - 2] ^= 0xFF;   // corrupt checksum low byte
+
+    const frames = new JbdReassembler().push(frame);
+    assert.equal(frames.length, 0);
+});
+
+test('reassembler recovers after a bad frame and parses the next valid one', () => {
+    const bad  = new Uint8Array(makeJbdFrame(JBD_CMD_BASIC, 0x00, makeJbdBasicData()));
+    bad[bad.length - 2] ^= 0xFF;       // corrupt checksum low byte
+    const good = makeJbdFrame(JBD_CMD_CELLS, 0x00, makeJbdCellsData([3300, 3310]));
+
+    const r = new JbdReassembler();
+    assert.equal(r.push(bad).length, 0);
+    const frames = r.push(good);
+    assert.equal(frames.length, 1);
+    assert.equal(frames[0].cmd, JBD_CMD_CELLS);
+});
+
+// ---------------------------------------------------------------------------
+// JBD basic-info parsing — protocol contracts
+// ---------------------------------------------------------------------------
+console.log('\nJBD basic-info parsing');
+
+test('current negative (discharging) is not inverted: raw -150 -> -1.50 A', () => {
+    const d = parseJbdBasic(makeJbdBasicData({ currentRaw: -150 }));
+    assert.ok(near(d.current, -1.50));
+});
+
+test('current positive (charging) is not inverted: raw 250 -> 2.50 A', () => {
+    const d = parseJbdBasic(makeJbdBasicData({ currentRaw: 250 }));
+    assert.ok(near(d.current, 2.50));
+});
+
+test('NTC count 0: tempEnv and tempMos both 0', () => {
+    const d = parseJbdBasic(makeJbdBasicData({ ntcCount: 0, temps: [] }));
+    assert.equal(d.tempEnv, 0);
+    assert.equal(d.tempMos, 0);
+});
+
+test('NTC count 3: tempEnv = NTC1, tempMos = NTC2, NTC3 ignored', () => {
+    // raw 2731 = 0.0°C; use distinct values per channel
+    const d = parseJbdBasic(makeJbdBasicData({ ntcCount: 3, temps: [2751, 2911, 3999] }));
+    assert.equal(d.tempEnv, 2);    // (2751-2731)/10 = 2.0
+    assert.equal(d.tempMos, 18);   // (2911-2731)/10 = 18.0
+});
+
+test('payload shorter than 23 bytes throws', () => {
+    assert.throws(() => parseJbdBasic(new Uint8Array(22)));
+});
+
+test('soh omitted (no optional tail) defaults to 0', () => {
+    const d = parseJbdBasic(makeJbdBasicData({ includeTail: false }));
+    assert.equal(d.soh, 0);
+});
+
+// ---------------------------------------------------------------------------
+// JBD cell-voltages parsing — protocol contracts
+// ---------------------------------------------------------------------------
+console.log('\nJBD cell-voltages parsing');
+
+test('fewer than 16 cells are padded with 0 up to 16', () => {
+    const cells = parseJbdCells(makeJbdCellsData([3300, 3310, 3320]));
+    assert.equal(cells.length, 16);
+    assert.ok(near(cells[0], 3.300));
+    assert.equal(cells[3], 0);
+    assert.equal(cells[15], 0);
+});
+
+test('more than 16 cells are all kept (not truncated)', () => {
+    const raws  = Array.from({ length: 18 }, (_, i) => 3300 + i);
+    const cells = parseJbdCells(makeJbdCellsData(raws));
+    assert.equal(cells.length, 18);
+    assert.ok(near(cells[17], (3300 + 17) / 1000));
 });
 
 // ---------------------------------------------------------------------------

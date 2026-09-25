@@ -4,6 +4,7 @@ import os
 from nicegui import context, ui, app, events
 from eg4_bms import EG4BMS, scan_for_batteries
 from litime_bms import LiTimeBMS
+from jbd_bms import JBDBMS
 from models import BatteryData
 from ui_components import get_soc_color, generate_cell_svg, Theme
 from typing import Dict, List, Optional
@@ -12,11 +13,15 @@ import json
 
 # Demo mode: replace BLE drivers with mocks (no real hardware needed)
 if os.environ.get('LITHIUM_DEMO_MODE'):
-    from mock_ble import scan_for_batteries, MockEG4BMS as EG4BMS, MockLiTimeBMS as LiTimeBMS
-    import eg4_bms, litime_bms
+    from mock_ble import (
+        scan_for_batteries, MockEG4BMS as EG4BMS, MockLiTimeBMS as LiTimeBMS,
+        MockJBDBMS as JBDBMS,
+    )
+    import eg4_bms, litime_bms, jbd_bms
     eg4_bms.EG4BMS = EG4BMS
     eg4_bms.scan_for_batteries = scan_for_batteries
     litime_bms.LiTimeBMS = LiTimeBMS
+    jbd_bms.JBDBMS = JBDBMS
 
 # 1. CORE CONFIG & LOGGING
 logging.basicConfig(level=logging.INFO)
@@ -122,6 +127,20 @@ def remove_battery(mac):
         del state.batteries[mac]; save_config(); broadcast_refresh()
 
 # 6. BMS DRIVER INTEGRATION
+def get_driver_class(bms_type: str):
+    """Map a bms_type string to its driver class.
+
+    Resolved from the modules at call time (not from the names imported at
+    the top of this file) so demo-mode monkeypatching of eg4_bms.EG4BMS /
+    litime_bms.LiTimeBMS / jbd_bms.JBDBMS keeps working.
+    """
+    import eg4_bms, litime_bms, jbd_bms
+    if 'JBD' in bms_type:
+        return jbd_bms.JBDBMS
+    if 'LiTime' in bms_type:
+        return litime_bms.LiTimeBMS
+    return eg4_bms.EG4BMS
+
 def bms_callback(mac, data):
     bat = state.batteries.get(mac)
     if not bat: return
@@ -147,9 +166,7 @@ async def poll_battery(bat):
     bat.busy = True
     try:
         if not bat.bms and bat.bms_type != 'Auto-Detect':
-            from eg4_bms import EG4BMS
-            from litime_bms import LiTimeBMS
-            bms_class = EG4BMS if 'EG4' in bat.bms_type else LiTimeBMS
+            bms_class = get_driver_class(bat.bms_type)
             bat.bms = bms_class(bat.address)
             bat.bms.on_data_callback = lambda d, m=bat.address: bms_callback(m, d)
 
@@ -160,8 +177,13 @@ async def poll_battery(bat):
                     from bleak import BleakClient
                     async with BleakClient(bat.address, timeout=5.0) as client:
                         svcs = [s.uuid.lower() for s in client.services]
-                        bat.bms_type = 'LiTime/Redodo' if any("ffe0" in s for s in svcs) else 'EG4'
-                    bms_class = EG4BMS if 'EG4' in bat.bms_type else LiTimeBMS
+                        if any(s.startswith("0000ff00-") for s in svcs):
+                            bat.bms_type = 'JBD'
+                        elif any("ffe0" in s for s in svcs):
+                            bat.bms_type = 'LiTime/Redodo'
+                        else:
+                            bat.bms_type = 'EG4'
+                    bms_class = get_driver_class(bat.bms_type)
                     bat.bms = bms_class(bat.address)
                     bat.bms.on_data_callback = lambda d, m=bat.address: bms_callback(m, d)
 
@@ -277,7 +299,7 @@ def sidebar_content():
     def sync_options():
         if dev_sel.options != state.device_options: dev_sel.options = state.device_options; dev_sel.update()
     ui.timer(1.0, sync_options)
-    bms_sel = ui.select(options=['Auto-Detect', 'EG4', 'LiTime/Redodo'], value='Auto-Detect').classes('w-full mb-4').props('dark outlined dense')
+    bms_sel = ui.select(options=['Auto-Detect', 'EG4', 'LiTime/Redodo', 'JBD'], value='Auto-Detect').classes('w-full mb-4').props('dark outlined dense')
     with ui.row().classes('w-full gap-3 mb-8'):
         with ui.button(on_click=lambda: asyncio.create_task(do_scan(dev_sel))).props('unelevated color=cyan-10').classes('flex-1 font-black rounded-2xl h-14'):
             ui.label('SCAN').bind_visibility_from(state, 'scanning', backward=lambda s: not s); ui.spinner(color='white', size='sm').bind_visibility_from(state, 'scanning')
