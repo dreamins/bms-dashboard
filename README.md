@@ -29,7 +29,7 @@ Two ways to run it:
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.9+
 - Bluetooth adapter (any BLE-capable adapter)
 - Windows, Linux, or macOS
 
@@ -62,7 +62,7 @@ test_all.bat
 ./test_all.sh
 ```
 
-102 tests covering protocol parsing contracts, BMS lifecycle, callback propagation, persistence, and UI logic.
+149 tests covering protocol parsing contracts, BMS lifecycle, callback propagation, persistence, and UI logic.
 
 ## Mobile PWA
 
@@ -92,10 +92,11 @@ The phone-side parsers are independently tested with `node docs/parsers.test.js`
 ├── run.bat / run.sh          # One-click launch
 ├── test_all.bat / test_all.sh # One-click test runner
 ├── requirements.txt
-└── dashboard_app/
-    ├── dashboard.py          # UI and application logic
-    ├── eg4_bms.py            # EG4 BLE driver
-    ├── litime_bms.py         # LiTime/Redodo BLE driver
-    ├── models.py             # BatteryData dataclass
-    └── tests/                # 102 tests
+├── dashboard_app/
+│   ├── dashboard.py          # UI and application logic
+│   ├── eg4_bms.py            # EG4 BLE driver
+│   ├── litime_bms.py         # LiTime/Redodo BLE driver
+│   ├── models.py             # BatteryData dataclass
+│   └── tests/                # 149 tests
+└── docs/                     # Android PWA (Web Bluetooth, vanilla JS)
 ```

@@ -6,7 +6,7 @@ echo ########################################
 echo # Lithium Core -- Test Suite           #
 echo ########################################
 
-set VENV_PYTHON=%~dp0python.exe
+set VENV_PYTHON=%~dp0.venv\Scripts\python.exe
 set APP_DIR=%~dp0dashboard_app
 
 if not exist "%VENV_PYTHON%" (
